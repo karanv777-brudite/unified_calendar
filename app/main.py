@@ -1,10 +1,23 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import auth, events
+import app.models
+from app.database import engine, Base
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Automatically create database tables asynchronously on startup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    # Shutdown actions (if any) can go here
+
 
 app = FastAPI(
     title="Unified Calendar API", 
-    description="Syncs events across Google and Outlook calendars."
+    description="Syncs events across Google and Outlook calendars.",
+    lifespan=lifespan
 )
 
 # This allows your future frontend (e.g., localhost:3000) to talk to this backend

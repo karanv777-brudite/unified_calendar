@@ -32,10 +32,11 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [eventTitle, setEventTitle] = useState('');
+  const [eventDescription, setEventDescription] = useState('');
   const [isAllDay, setIsAllDay] = useState(false);
   const [startDate, setStartDate] = useState<Date | null>(new Date());
   const [endDate, setEndDate] = useState<Date | null>(new Date());
-  const [targetAccount, setTargetAccount] = useState<string>('all'); 
+  const [targetAccounts, setTargetAccounts] = useState<string[]>(['all']); 
   const [selectedEventData, setSelectedEventData] = useState<any>(null);
 
   // Automatically detects the user's local machine timezone (e.g., "Asia/Kolkata")
@@ -74,10 +75,11 @@ function App() {
   const handleDateSelect = (selectInfo: any) => {
     setModalMode('create');
     setEventTitle('');
+    setEventDescription('');
     setIsAllDay(selectInfo.allDay);
     setStartDate(new Date(selectInfo.startStr));
     setEndDate(new Date(selectInfo.endStr || selectInfo.startStr));
-    setTargetAccount('all'); 
+    setTargetAccounts(['all']); 
     setSelectedEventData(selectInfo); 
     setIsModalOpen(true);
   };
@@ -87,11 +89,17 @@ function App() {
     setEventTitle(clickInfo.event.title);
     
     const fullEvent = events.find(e => e.id === clickInfo.event.id);
+    setEventDescription(fullEvent?.description || '');
+
     if (fullEvent) {
-      const allDayStatus = clickInfo.event.allDay || fullEvent.start.dateTime.endsWith('T00:00:00Z');
+      const allDayStatus = clickInfo.event.allDay || Boolean(fullEvent.start?.date) || (fullEvent.start?.dateTime?.endsWith('T00:00:00Z') ?? false);
       setIsAllDay(allDayStatus);
-      setStartDate(new Date(fullEvent.start.dateTime));
-      setEndDate(new Date(fullEvent.end.dateTime));
+      
+      const startVal = fullEvent.start?.dateTime || fullEvent.start?.date;
+      const endVal = fullEvent.end?.dateTime || fullEvent.end?.date;
+      
+      setStartDate(startVal ? new Date(startVal) : new Date());
+      setEndDate(endVal ? new Date(endVal) : new Date());
       setSelectedEventData(fullEvent);
     }
     
@@ -126,13 +134,36 @@ function App() {
   };
 
   const formatPayloadDate = (d: Date, allDay: boolean) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
     if (allDay) {
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}T00:00:00Z`;
+      return `${yyyy}-${mm}-${dd}`; 
     }
     return d.toISOString();
+  };
+
+  const handleAccountToggle = (key: string) => {
+    if (key === 'all') {
+      if (targetAccounts.includes('all')) {
+        setTargetAccounts([]);
+      } else {
+        setTargetAccounts(['all']);
+      }
+      return;
+    }
+
+    if (targetAccounts.includes('all')) {
+      setTargetAccounts([key]);
+      return;
+    }
+
+    if (targetAccounts.includes(key)) {
+      const updated = targetAccounts.filter(k => k !== key);
+      setTargetAccounts(updated.length === 0 ? ['all'] : updated);
+    } else {
+      setTargetAccounts([...targetAccounts, key]);
+    }
   };
 
   const handleSaveModal = async () => {
@@ -141,6 +172,9 @@ function App() {
     const startStr = formatPayloadDate(startDate, isAllDay);
     const endStr = formatPayloadDate(endDate, isAllDay);
 
+    const startObj = isAllDay ? { date: startStr } : { dateTime: startStr, timeZone: userTimeZone };
+    const endObj = isAllDay ? { date: endStr } : { dateTime: endStr, timeZone: userTimeZone };
+
     if (modalMode === 'create') {
       const calendarApi = selectedEventData.view.calendar;
       calendarApi.unselect(); 
@@ -148,18 +182,20 @@ function App() {
       const newEventPayload: UnifiedEvent = {
         id: `temp_${Date.now()}`, 
         title: eventTitle,
-        start: { dateTime: startStr, timeZone: userTimeZone },
-        end: { dateTime: endStr, timeZone: userTimeZone },
+        description: eventDescription,
+        start: startObj as any,
+        end: endObj as any,
         source: 'unified',
       };
 
-      await createEvent(newEventPayload, targetAccount);
+      await createEvent(newEventPayload, targetAccounts);
     } else {
       const updatedPayload: UnifiedEvent = {
         ...selectedEventData,
         title: eventTitle,
-        start: { dateTime: startStr, timeZone: userTimeZone },
-        end: { dateTime: endStr, timeZone: userTimeZone },
+        description: eventDescription,
+        start: startObj as any,
+        end: endObj as any,
       };
       
       try {
@@ -191,12 +227,20 @@ function App() {
     const accountKey = event.original_ids?.account || event.source;
     const colors = getAccountColor(accountKey);
 
+    const rawStart = event.start?.date || event.start?.dateTime;
+    const rawEnd = event.end?.date || event.end?.dateTime;
+  
+    const isAllDay = Boolean(event.start?.date) || (event.start?.dateTime?.endsWith('T00:00:00Z') ?? false);
+
+    const startDate = isAllDay && rawStart ? rawStart.split('T')[0] : rawStart;
+    const endDate = isAllDay && rawEnd ? rawEnd.split('T')[0] : rawEnd;
+
     return {
       id: event.id,
       title: event.title,
-      start: event.start.dateTime,
-      end: event.end.dateTime,
-      allDay: event.start.dateTime.endsWith('T00:00:00Z'),
+      start: startDate,
+      end: endDate,
+      allDay: isAllDay,
       backgroundColor: colors.bg,
       borderColor: colors.border,
     };
@@ -311,22 +355,47 @@ function App() {
               />
             </div>
 
-            {/* Target Account Selector (Only shown during creation) */}
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Description</label>
+              <textarea 
+                placeholder="Add notes or details..." 
+                value={eventDescription}
+                onChange={(e) => setEventDescription(e.target.value)}
+                rows={3}
+                className="w-full border-2 border-gray-200 rounded-xl p-3 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none text-sm"
+              />
+            </div>
+
+            {/* Target Account Checkbox Selector (Only shown during creation) */}
             {modalMode === 'create' && (
               <div className="mb-5">
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Target Calendar / Account</label>
-                <select 
-                  value={targetAccount} 
-                  onChange={(e) => setTargetAccount(e.target.value)}
-                  className="w-full border-2 border-gray-200 rounded-xl p-3 text-slate-800 bg-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer text-sm font-medium"
-                >
-                  <option value="all">🌐 All Linked Accounts</option>
-                  {accounts.filter(a => a.linked && !a.key.includes('placeholder')).map(acc => (
-                    <option key={acc.key} value={acc.key}>
-                      {acc.provider}: {acc.email}
-                    </option>
-                  ))}
-                </select>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Target Calendars / Accounts</label>
+                <div className="space-y-2 max-h-40 overflow-y-auto border-2 border-gray-200 rounded-xl p-3 bg-white">
+                  <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-800 pb-2 border-b border-gray-100">
+                    <input 
+                      type="checkbox"
+                      checked={targetAccounts.includes('all')}
+                      onChange={() => handleAccountToggle('all')}
+                      className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                    />
+                    🌐 All Linked Accounts
+                  </label>
+                  
+                  {accounts.filter(a => a.linked && !a.key.includes('placeholder')).map(acc => {
+                    const isChecked = targetAccounts.includes('all') || targetAccounts.includes(acc.key);
+                    return (
+                      <label key={acc.key} className="flex items-center gap-2 cursor-pointer text-sm text-slate-700">
+                        <input 
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => handleAccountToggle(acc.key)}
+                          className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="truncate">{acc.provider}: {acc.email}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -349,7 +418,7 @@ function App() {
                 <div className="relative">
                   <DatePicker
                     selected={startDate}
-                    onChange={(date) => setStartDate(date)}
+                    onChange={(date: Date | null) => setStartDate(date)}
                     showTimeSelect={!isAllDay}
                     dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
                     className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer"
@@ -369,7 +438,7 @@ function App() {
                 <div className="relative">
                   <DatePicker
                     selected={endDate}
-                    onChange={(date) => setEndDate(date)}
+                    onChange={(date: Date | null) => setEndDate(date)}
                     showTimeSelect={!isAllDay}
                     dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
                     className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer"

@@ -20,8 +20,11 @@ export const fetchAccounts = async () => {
 
 // --- NEW CRUD OPERATIONS ---
 
-export const createEvent = async (event: Partial<UnifiedEvent>, targetAccount: string = 'all'): Promise<UnifiedEvent> => {
-  const response = await api.post(`/events?target_account=${targetAccount}`, event);
+export const createEvent = async (event: Partial<UnifiedEvent>, targetAccount: string[] = ['all']): Promise<UnifiedEvent> => {
+  const response = await api.post(`/events`, event, {
+    params: { target_account: targetAccount },
+    paramsSerializer: { indexes: null } // Prevents bracket notation like target_account[]=...
+  });
   return response.data;
 };
 

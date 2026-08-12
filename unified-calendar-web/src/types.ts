@@ -1,5 +1,6 @@
 export interface EventDateTime {
   dateTime: string;
+  date?: string;
   timeZone: string;
 }
 

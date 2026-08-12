@@ -23,21 +23,28 @@ async def fetch_events(access_token: str, time_min: str, time_max: str) -> List[
         start = item.get("start", {})
         end = item.get("end", {})
         
-        # Safely parse dates (Google returns 'date' for all-day, 'dateTime' for timed)
-        start_dt = start.get("dateTime")
-        if not start_dt:
-            start_dt = f"{start.get('date')}T00:00:00Z"
-            
-        end_dt = end.get("dateTime")
-        if not end_dt:
-            end_dt = f"{end.get('date')}T23:59:59Z"
+        # Check if it's an all-day event (Google uses 'date' for all-day)
+        if "date" in start:
+            start_val = {"date": start.get("date")}
+            # Google's all-day end date is exclusive, fallback to start date if missing
+            end_date = end.get("date") or start.get("date")
+            end_val = {"date": end_date}
+        else:
+            start_val = {
+                "dateTime": start.get("dateTime"), 
+                "timeZone": start.get("timeZone", "UTC")
+            }
+            end_val = {
+                "dateTime": end.get("dateTime"), 
+                "timeZone": end.get("timeZone", "UTC")
+            }
         
         events.append({
             "id": item.get("id"),
             "title": item.get("summary", "No Title"),
             "description": item.get("description", ""),
-            "start": {"dateTime": start_dt, "timeZone": start.get("timeZone", "UTC")},
-            "end": {"dateTime": end_dt, "timeZone": end.get("timeZone", "UTC")},
+            "start": start_val,
+            "end": end_val,
             "source": "google"
         })
     return events

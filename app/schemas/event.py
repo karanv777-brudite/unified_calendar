@@ -2,9 +2,12 @@ from pydantic import BaseModel
 from typing import Optional
 
 class EventDateTime(BaseModel):
-    dateTime: str # ISO 8601 string
+    # dateTime: str # ISO 8601 string
+    # # date: str
     # timeZone: str = "UTC"
-    timeZone: str = "UTC"
+    dateTime: Optional[str] = None # ISO 8601 string
+    date: Optional[str] = None
+    timeZone: Optional[str] = "UTC"
 
 class UnifiedEvent(BaseModel):
     id: Optional[str] = None
