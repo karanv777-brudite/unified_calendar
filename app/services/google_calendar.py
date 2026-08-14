@@ -1,5 +1,5 @@
 import httpx
-from typing import List
+from typing import List, Optional
 
 async def fetch_events(access_token: str, time_min: str, time_max: str) -> List[dict]:
     url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events"
@@ -23,10 +23,8 @@ async def fetch_events(access_token: str, time_min: str, time_max: str) -> List[
         start = item.get("start", {})
         end = item.get("end", {})
         
-        # Check if it's an all-day event (Google uses 'date' for all-day)
         if "date" in start:
             start_val = {"date": start.get("date")}
-            # Google's all-day end date is exclusive, fallback to start date if missing
             end_date = end.get("date") or start.get("date")
             end_val = {"date": end_date}
         else:
@@ -39,19 +37,34 @@ async def fetch_events(access_token: str, time_min: str, time_max: str) -> List[
                 "timeZone": end.get("timeZone", "UTC")
             }
         
+        # Map Google attendees to unified format
+        raw_attendees = item.get("attendees", [])
+        attendees_list = []
+        for att in raw_attendees:
+            g_status = att.get("responseStatus", "needsAction")
+            status = "accepted" if g_status == "accepted" else ("declined" if g_status == "declined" else "pending")
+            attendees_list.append({
+                "email": att.get("email"),
+                "status": status
+            })
+
         events.append({
             "id": item.get("id"),
             "title": item.get("summary", "No Title"),
             "description": item.get("description", ""),
             "start": start_val,
             "end": end_val,
-            "source": "google"
+            "source": "google",
+            "attendees": attendees_list
         })
     return events
 
-async def create_event(access_token: str, event_data: dict) -> str:
+async def create_event(access_token: str, event_data: dict, attendees: Optional[List[str]] = None) -> str:
     url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    if attendees:
+        event_data["attendees"] = [{"email": email} for email in attendees]
+
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         res = await client.post(url, headers=headers, json=event_data)
         if res.status_code == 200:
@@ -60,9 +73,12 @@ async def create_event(access_token: str, event_data: dict) -> str:
             print(f"Failed to create Google event: {res.text}")
             return None
 
-async def update_event(access_token: str, event_id: str, event_data: dict):
+async def update_event(access_token: str, event_id: str, event_data: dict, attendees: Optional[List[str]] = None):
     url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    if attendees:
+        event_data["attendees"] = [{"email": email} for email in attendees]
+
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         await client.put(url, headers=headers, json=event_data)
 

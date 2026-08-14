@@ -5,15 +5,8 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
-import { fetchEvents, fetchAccounts, createEvent, updateEvent, deleteEvent, getGoogleLoginUrl, getMicrosoftLoginUrl } from './api';
-import type { UnifiedEvent } from './types';
-
-interface Account {
-  key: string;
-  provider: string;
-  email: string;
-  linked: boolean;
-}
+import { fetchEvents, fetchAccounts, disconnectAccount, createEvent, updateEvent, deleteEvent, getGoogleLoginUrl, getMicrosoftLoginUrl } from './api';
+import type { UnifiedEvent, Account } from './types';
 
 const accountColors = [
   { bg: '#3B82F6', border: '#2563EB' }, // Blue
@@ -39,7 +32,11 @@ function App() {
   const [targetAccounts, setTargetAccounts] = useState<string[]>(['all']); 
   const [selectedEventData, setSelectedEventData] = useState<any>(null);
 
-  // Automatically detects the user's local machine timezone (e.g., "Asia/Kolkata")
+  // Guest State
+  const [guestInput, setGuestInput] = useState('');
+  const [attendees, setAttendees] = useState<string[]>([]);
+
+  // Automatically detects the user's local machine timezone
   const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const loadData = async () => {
@@ -76,6 +73,8 @@ function App() {
     setModalMode('create');
     setEventTitle('');
     setEventDescription('');
+    setAttendees([]);
+    setGuestInput('');
     setIsAllDay(selectInfo.allDay);
     setStartDate(new Date(selectInfo.startStr));
     setEndDate(new Date(selectInfo.endStr || selectInfo.startStr));
@@ -90,6 +89,7 @@ function App() {
     
     const fullEvent = events.find(e => e.id === clickInfo.event.id);
     setEventDescription(fullEvent?.description || '');
+    setAttendees(fullEvent?.attendees?.map(a => a.email) || []);
 
     if (fullEvent) {
       const allDayStatus = clickInfo.event.allDay || Boolean(fullEvent.start?.date) || (fullEvent.start?.dateTime?.endsWith('T00:00:00Z') ?? false);
@@ -104,6 +104,17 @@ function App() {
     }
     
     setIsModalOpen(true);
+  };
+
+  const handleAddGuest = () => {
+    if (guestInput.trim() && !attendees.includes(guestInput.trim())) {
+      setAttendees([...attendees, guestInput.trim()]);
+      setGuestInput('');
+    }
+  };
+
+  const handleRemoveGuest = (emailToRemove: string) => {
+    setAttendees(attendees.filter(email => email !== emailToRemove));
   };
 
   const handleEventDrop = async (changeInfo: any) => {
@@ -175,6 +186,8 @@ function App() {
     const startObj = isAllDay ? { date: startStr } : { dateTime: startStr, timeZone: userTimeZone };
     const endObj = isAllDay ? { date: endStr } : { dateTime: endStr, timeZone: userTimeZone };
 
+    const formattedAttendees = attendees.map(email => ({ email, status: 'pending' as const }));
+
     if (modalMode === 'create') {
       const calendarApi = selectedEventData.view.calendar;
       calendarApi.unselect(); 
@@ -186,6 +199,7 @@ function App() {
         start: startObj as any,
         end: endObj as any,
         source: 'unified',
+        attendees: formattedAttendees
       };
 
       await createEvent(newEventPayload, targetAccounts);
@@ -196,6 +210,7 @@ function App() {
         description: eventDescription,
         start: startObj as any,
         end: endObj as any,
+        attendees: formattedAttendees
       };
       
       try {
@@ -223,6 +238,16 @@ function App() {
     }
   };
 
+  const handleDisconnect = async (accountKey: string) => {
+    if (!window.confirm("Are you sure you want to disconnect this account?")) return;
+    try {
+      await disconnectAccount(accountKey);
+      loadData(); 
+    } catch (error) {
+      console.error("Failed to disconnect account:", error);
+    }
+  };
+
   const calendarEvents = events.map((event) => {
     const accountKey = event.original_ids?.account || event.source;
     const colors = getAccountColor(accountKey);
@@ -231,18 +256,18 @@ function App() {
     const rawEnd = event.end?.date || event.end?.dateTime;
   
     const isAllDay = Boolean(event.start?.date) || (event.start?.dateTime?.endsWith('T00:00:00Z') ?? false);
-
-    const startDate = isAllDay && rawStart ? rawStart.split('T')[0] : rawStart;
-    const endDate = isAllDay && rawEnd ? rawEnd.split('T')[0] : rawEnd;
+    const isPending = event.attendees?.some(a => a.status === 'pending');
 
     return {
       id: event.id,
       title: event.title,
-      start: startDate,
-      end: endDate,
+      start: isAllDay && rawStart ? rawStart.split('T')[0] : rawStart,
+      end: isAllDay && rawEnd ? rawEnd.split('T')[0] : rawEnd,
       allDay: isAllDay,
-      backgroundColor: colors.bg,
+      backgroundColor: isPending ? '#ffffff' : colors.bg,
       borderColor: colors.border,
+      textColor: isPending ? colors.border : '#ffffff',
+      classNames: isPending ? ['border-2', 'border-dashed'] : [],
     };
   });
 
@@ -270,26 +295,39 @@ function App() {
                 const accColors = isLinked ? getAccountColor(acc.key) : null;
 
                 return (
-                  <div key={acc.key} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-gray-100 relative overflow-hidden">
+                  <div key={acc.key} className="p-3 bg-slate-50 rounded-xl border border-gray-100 relative overflow-hidden space-y-2">
                     {isLinked && (
                       <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: accColors?.bg }}></div>
                     )}
                     
-                    <div className="overflow-hidden pl-1.5 pr-2">
-                      <p className="text-xs font-semibold text-slate-500 uppercase">{acc.provider}</p>
-                      <p className="text-sm font-medium text-slate-800 truncate" title={acc.email}>{acc.email}</p>
+                    <div className="flex items-center justify-between">
+                      <div className="overflow-hidden pl-1.5 pr-2">
+                        <p className="text-xs font-semibold text-slate-500 uppercase">{acc.provider}</p>
+                        <p className="text-sm font-medium text-slate-800 truncate" title={acc.email}>{acc.email}</p>
+                      </div>
+
+                      {isLinked ? (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-semibold rounded-full border border-emerald-100 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Linked
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-500 text-xs font-semibold rounded-full border border-gray-200 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
+                          Not Linked
+                        </span>
+                      )}
                     </div>
 
-                    {isLinked ? (
-                      <span className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-semibold rounded-full border border-emerald-100 shrink-0">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Linked
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-500 text-xs font-semibold rounded-full border border-gray-200 shrink-0">
-                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
-                        Not Linked
-                      </span>
+                    {isLinked && (
+                      <div className="pl-1.5 pt-1 border-t border-gray-200/60 mt-2">
+                        <button 
+                          onClick={() => handleDisconnect(acc.key)}
+                          className="text-xs font-semibold text-red-600 hover:text-red-800 transition-colors"
+                        >
+                          Disconnect Account
+                        </button>
+                      </div>
                     )}
                   </div>
                 );
@@ -338,7 +376,7 @@ function App() {
       {/* Modal Overlay */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex justify-center items-center z-50">
-          <div className="bg-white p-7 rounded-2xl shadow-2xl w-[420px]">
+          <div className="bg-white p-7 rounded-2xl shadow-2xl w-[450px] max-h-[90vh] overflow-y-auto">
             <h2 className="text-2xl font-bold text-slate-900 mb-6 tracking-tight">
               {modalMode === 'create' ? 'Create New Event' : 'Edit Event'}
             </h2>
@@ -361,16 +399,48 @@ function App() {
                 placeholder="Add notes or details..." 
                 value={eventDescription}
                 onChange={(e) => setEventDescription(e.target.value)}
-                rows={3}
+                rows={2}
                 className="w-full border-2 border-gray-200 rounded-xl p-3 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none text-sm"
               />
+            </div>
+
+            {/* Guest Invite Section */}
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Invite Guests</label>
+              <div className="flex gap-2 mb-2">
+                <input 
+                  type="email" 
+                  placeholder="guest@example.com" 
+                  value={guestInput}
+                  onChange={(e) => setGuestInput(e.target.value)}
+                  className="flex-1 border-2 border-gray-200 rounded-xl p-2.5 text-slate-800 text-sm focus:outline-none focus:border-blue-500"
+                />
+                <button 
+                  type="button" 
+                  onClick={handleAddGuest}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-colors"
+                >
+                  Add
+                </button>
+              </div>
+
+              {attendees.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {attendees.map(email => (
+                    <span key={email} className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full border border-blue-100">
+                      {email}
+                      <button type="button" onClick={() => handleRemoveGuest(email)} className="hover:text-red-600 ml-1 font-bold">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Target Account Checkbox Selector (Only shown during creation) */}
             {modalMode === 'create' && (
               <div className="mb-5">
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">Target Calendars / Accounts</label>
-                <div className="space-y-2 max-h-40 overflow-y-auto border-2 border-gray-200 rounded-xl p-3 bg-white">
+                <div className="space-y-2 max-h-36 overflow-y-auto border-2 border-gray-200 rounded-xl p-3 bg-white">
                   <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-800 pb-2 border-b border-gray-100">
                     <input 
                       type="checkbox"
@@ -415,42 +485,32 @@ function App() {
             <div className="flex gap-4 mb-8">
               <div className="flex-1 relative">
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">Start</label>
-                <div className="relative">
-                  <DatePicker
-                    selected={startDate}
-                    onChange={(date: Date | null) => setStartDate(date)}
-                    showTimeSelect={!isAllDay}
-                    dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
-                    className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer"
-                    wrapperClassName="w-full"
-                    portalId="root"
-                    popperPlacement="bottom-start"
-                    showPopperArrow={false}
-                  />
-                  <svg className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                </div>
+                <DatePicker
+                  selected={startDate}
+                  onChange={(date: Date | null) => setStartDate(date)}
+                  showTimeSelect={!isAllDay}
+                  dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
+                  className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 transition-all cursor-pointer"
+                  wrapperClassName="w-full"
+                  portalId="root"
+                  popperPlacement="bottom-start"
+                  showPopperArrow={false}
+                />
               </div>
               
               <div className="flex-1 relative">
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">End</label>
-                <div className="relative">
-                  <DatePicker
-                    selected={endDate}
-                    onChange={(date: Date | null) => setEndDate(date)}
-                    showTimeSelect={!isAllDay}
-                    dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
-                    className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer"
-                    wrapperClassName="w-full"
-                    portalId="root"
-                    popperPlacement="bottom-start"
-                    showPopperArrow={false}
-                  />
-                  <svg className="w-5 h-5 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                </div>
+                <DatePicker
+                  selected={endDate}
+                  onChange={(date: Date | null) => setEndDate(date)}
+                  showTimeSelect={!isAllDay}
+                  dateFormat={isAllDay ? "dd-MMM-yyyy" : "dd-MMM-yyyy HH:mm"}
+                  className="w-full border-2 border-gray-200 rounded-xl p-2.5 pl-3 pr-10 text-slate-800 text-sm focus:outline-none focus:border-blue-500 transition-all cursor-pointer"
+                  wrapperClassName="w-full"
+                  portalId="root"
+                  popperPlacement="bottom-start"
+                  showPopperArrow={false}
+                />
               </div>
             </div>
 

@@ -1,18 +1,54 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, status
 from fastapi.responses import RedirectResponse
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from passlib.context import CryptContext
 
 from app.core.config import settings
 from app.database import get_db
+from app.models.user import User
+from app.schemas.user import UserCreate, UserResponse
 from app.repositories.token_repository import TokenRepository
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 FRONTEND_URL = "http://localhost:5173"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- Local User Account Endpoints ---
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register_user(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Registers a new local user account."""
+    result = await db.execute(select(User).where(User.email == user_data.email))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered.")
+
+    hashed_pw = pwd_context.hash(user_data.password)
+    new_user = User(email=user_data.email, hashed_password=hashed_pw)
+    
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    return new_user
+
+@router.post("/login", response_model=UserResponse)
+async def login_user(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Authenticates a local user account."""
+    result = await db.execute(select(User).where(User.email == user_data.email))
+    user = result.scalar_one_or_none()
+    
+    if not user or not pwd_context.verify(user_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+        
+    return user
+
+
+# --- OAuth Provider Endpoints ---
 
 @router.get("/google/login")
 async def google_login():
-    """Redirects the user to Google's OAuth 2.0 consent screen."""
+    """Redirects the user to Google's OAuth 2.0 consent screen[cite: 3]."""
     scope = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email"
     auth_url = (
         f"https://accounts.google.com/o/oauth2/v2/auth?"
@@ -27,7 +63,7 @@ async def google_login():
 
 @router.get("/google/callback")
 async def google_callback(code: str, request: Request, user_id: str = "test_user", db: AsyncSession = Depends(get_db)):
-    """Handles the callback from Google, fetches user identity, and securely stores encrypted tokens in PostgreSQL."""
+    """Handles the callback from Google, fetches user identity, and securely stores encrypted tokens in PostgreSQL[cite: 3]."""
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "code": code,
@@ -46,7 +82,6 @@ async def google_callback(code: str, request: Request, user_id: str = "test_user
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
         
-        # Fetch the user's email address to uniquely segment multiple Google accounts
         userinfo_response = await client.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"}
@@ -56,7 +91,6 @@ async def google_callback(code: str, request: Request, user_id: str = "test_user
 
     account_key = f"google_{email}"
 
-    # Save encrypted credentials to PostgreSQL via Repository
     await TokenRepository.save_or_update_token(
         db=db,
         user_id=user_id,
@@ -72,7 +106,7 @@ async def google_callback(code: str, request: Request, user_id: str = "test_user
 
 @router.get("/microsoft/login")
 async def microsoft_login():
-    """Redirects the user to Microsoft's OAuth 2.0 consent screen."""
+    """Redirects the user to Microsoft's OAuth 2.0 consent screen[cite: 3]."""
     scope = "Calendars.ReadWrite offline_access User.Read"
     auth_url = (
         f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"
@@ -85,7 +119,7 @@ async def microsoft_login():
 
 @router.get("/microsoft/callback")
 async def microsoft_callback(code: str, request: Request, user_id: str = "test_user", db: AsyncSession = Depends(get_db)):
-    """Handles the callback from Microsoft, fetches user identity, and securely stores encrypted tokens in PostgreSQL."""
+    """Handles the callback from Microsoft, fetches user identity, and securely stores encrypted tokens in PostgreSQL[cite: 3]."""
     token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
     data = {
         "client_id": settings.MICROSOFT_CLIENT_ID,
@@ -106,7 +140,6 @@ async def microsoft_callback(code: str, request: Request, user_id: str = "test_u
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
 
-        # Fetch user email from Microsoft Graph to uniquely segment multiple accounts
         userinfo_response = await client.get(
             "https://graph.microsoft.com/v1.0/me",
             headers={"Authorization": f"Bearer {access_token}"}
@@ -116,7 +149,6 @@ async def microsoft_callback(code: str, request: Request, user_id: str = "test_u
 
     account_key = f"microsoft_{email}"
 
-    # Save encrypted credentials to PostgreSQL via Repository
     await TokenRepository.save_or_update_token(
         db=db,
         user_id=user_id,
@@ -132,7 +164,7 @@ async def microsoft_callback(code: str, request: Request, user_id: str = "test_u
 
 @router.get("/accounts")
 async def get_connected_accounts(user_id: str = "test_user", db: AsyncSession = Depends(get_db)):
-    """Returns the precise link status of Google and Microsoft providers from PostgreSQL."""
+    """Returns the precise link status of Google and Microsoft providers from PostgreSQL for the given user[cite: 3]."""
     tokens = await TokenRepository.get_tokens_by_user(db, user_id)
     
     google_accounts = []
@@ -162,3 +194,11 @@ async def get_connected_accounts(user_id: str = "test_user", db: AsyncSession = 
             item["provider"] = "Google" if item["key"].startswith("google") else "Microsoft"
 
     return response_data
+
+@router.delete("/accounts/{account_key}")
+async def disconnect_account(account_key: str, user_id: str = "test_user", db: AsyncSession = Depends(get_db)):
+    """Deletes/unlinks a specific connected provider account for the user."""
+    success = await TokenRepository.delete_token(db, user_id, account_key)
+    if not success:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return {"message": f"Account {account_key} unlinked successfully."}

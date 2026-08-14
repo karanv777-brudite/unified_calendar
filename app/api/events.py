@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.event import UnifiedEvent, EventDateTime
+from app.schemas.event import UnifiedEvent, EventDateTime, Attendee
 from app.database import get_db
 from app.repositories.token_repository import TokenRepository
 from app.services import google_calendar, outlook_calendar
@@ -22,7 +22,6 @@ async def get_unified_events(
     time_min = now.isoformat() + 'Z'
     time_max = (now + timedelta(days=days)).isoformat() + 'Z'
     
-    # Fetch tokens securely from PostgreSQL database
     tokens = await TokenRepository.get_tokens_by_user(db, user_id)
     unified_events = []
     
@@ -43,7 +42,8 @@ async def get_unified_events(
                     start=EventDateTime(**ge["start"]), 
                     end=EventDateTime(**ge["end"]),
                     source="google", 
-                    original_ids={"google": ge["id"], "account": account_key}
+                    original_ids={"google": ge["id"], "account": account_key},
+                    attendees=[Attendee(**att) for att in ge.get("attendees", [])]
                 ))
                 
         elif acc.provider == "microsoft":
@@ -56,7 +56,8 @@ async def get_unified_events(
                     start=EventDateTime(**me["start"]), 
                     end=EventDateTime(**me["end"]),
                     source="microsoft", 
-                    original_ids={"microsoft": me["id"], "account": account_key}
+                    original_ids={"microsoft": me["id"], "account": account_key},
+                    attendees=[Attendee(**att) for att in me.get("attendees", [])]
                  ))
                
     return unified_events
@@ -72,14 +73,14 @@ async def create_event(
     tokens = await TokenRepository.get_tokens_by_user(db, user_id)
     created_ids = {}
     
+    guest_emails = [a.email for a in event.attendees] if event.attendees else []
+    
     for acc in tokens:
         access_token = acc.access_token
         if not access_token:
             continue
             
         account_key = acc.account_key
-        
-        # Since target_account is now a List[str], check if "all" is selected or this specific account key is in the list
         is_targeted = "all" in target_account or account_key in target_account
         if not is_targeted:
             continue
@@ -91,7 +92,7 @@ async def create_event(
                 "start": event.start.model_dump(exclude_none=True), 
                 "end": event.end.model_dump(exclude_none=True)
             }
-            g_id = await google_calendar.create_event(access_token, payload)
+            g_id = await google_calendar.create_event(access_token, payload, attendees=guest_emails)
             if g_id: 
                 created_ids["google"] = g_id
                 created_ids["account"] = account_key
@@ -99,7 +100,6 @@ async def create_event(
         elif acc.provider == "microsoft":
             start_data = event.start.model_dump(exclude_none=True)
             end_data = event.end.model_dump(exclude_none=True)
-            
             is_all_day = "date" in start_data
             
             if is_all_day:
@@ -124,7 +124,7 @@ async def create_event(
                 "end": ms_end,
                 "isAllDay": is_all_day
             }
-            m_id = await outlook_calendar.create_event(access_token, payload)
+            m_id = await outlook_calendar.create_event(access_token, payload, attendees=guest_emails)
             if m_id: 
                 created_ids["microsoft"] = m_id
                 created_ids["account"] = account_key
@@ -150,6 +150,7 @@ async def update_event(
     tokens = await TokenRepository.get_tokens_by_user(db, user_id)
     token_map = {t.account_key: t for t in tokens}
     target_account = event_update.original_ids.get("account")
+    guest_emails = [a.email for a in event_update.attendees] if event_update.attendees else []
     
     if target_account and target_account in token_map:
         acc = token_map[target_account]
@@ -161,7 +162,7 @@ async def update_event(
                  "start": event_update.start.model_dump(exclude_none=True), 
                  "end": event_update.end.model_dump(exclude_none=True)
              }
-             await google_calendar.update_event(access_token, event_update.original_ids["google"], payload)
+             await google_calendar.update_event(access_token, event_update.original_ids["google"], payload, attendees=guest_emails)
         elif acc.provider == "microsoft":
              start_data = event_update.start.model_dump(exclude_none=True)
              end_data = event_update.end.model_dump(exclude_none=True)
@@ -181,7 +182,7 @@ async def update_event(
                  "end": ms_end,
                  "isAllDay": is_all_day
              }
-             await outlook_calendar.update_event(access_token, event_update.original_ids["microsoft"], payload)
+             await outlook_calendar.update_event(access_token, event_update.original_ids["microsoft"], payload, attendees=guest_emails)
     else:
         for acc in tokens:
             access_token = acc.access_token
@@ -193,7 +194,27 @@ async def update_event(
                      "start": event_update.start.model_dump(exclude_none=True), 
                      "end": event_update.end.model_dump(exclude_none=True)
                  }
-                 await google_calendar.update_event(access_token, event_update.original_ids["google"], payload)
+                 await google_calendar.update_event(access_token, event_update.original_ids["google"], payload, attendees=guest_emails)
+            elif "microsoft" in event_update.original_ids and acc.provider == "microsoft":
+                 start_data = event_update.start.model_dump(exclude_none=True)
+                 end_data = event_update.end.model_dump(exclude_none=True)
+                 is_all_day = "date" in start_data
+                 
+                 if is_all_day:
+                     ms_start = {"dateTime": f"{start_data['date']}T00:00:00", "timeZone": "UTC"}
+                     ms_end = {"dateTime": f"{end_data.get('date', start_data['date'])}T00:00:00", "timeZone": "UTC"}
+                 else:
+                     ms_start = {"dateTime": start_data.get("dateTime"), "timeZone": start_data.get("timeZone", "UTC")}
+                     ms_end = {"dateTime": end_data.get("dateTime"), "timeZone": end_data.get("timeZone", "UTC")}
+
+                 payload = {
+                     "subject": event_update.title, 
+                     "body": {"contentType": "HTML", "content": event_update.description or ""}, 
+                     "start": ms_start, 
+                     "end": ms_end,
+                     "isAllDay": is_all_day
+                 }
+                 await outlook_calendar.update_event(access_token, event_update.original_ids["microsoft"], payload, attendees=guest_emails)
 
     return event_update
 

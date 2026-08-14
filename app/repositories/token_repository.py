@@ -1,6 +1,6 @@
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import UserAccountToken
+from app.models.tokens import UserAccountToken
 
 class TokenRepository:
     """
@@ -51,3 +51,19 @@ class TokenRepository:
         await db.commit()
         await db.refresh(db_token)
         return db_token
+
+    @staticmethod
+    async def delete_token(db: AsyncSession, user_id: str, account_key: str) -> bool:
+        
+        result = await db.execute(
+            select(UserAccountToken).where(
+                UserAccountToken.user_id == user_id,
+                UserAccountToken.account_key == account_key
+            )
+        )
+        token_record = result.scalar_one_or_none()
+        if token_record:
+            await db.delete(token_record)
+            await db.commit()
+            return True
+        return False

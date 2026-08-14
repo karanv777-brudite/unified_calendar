@@ -1,7 +1,12 @@
 export interface EventDateTime {
-  dateTime: string;
+  dateTime?: string;
   date?: string;
-  timeZone: string;
+  timeZone?: string;
+}
+
+export interface Attendee{
+  email: string;
+  status?: 'pending' | 'accepted' | 'declined';
 }
 
 export interface UnifiedEvent {
@@ -10,6 +15,14 @@ export interface UnifiedEvent {
   description?: string;
   start: EventDateTime;
   end: EventDateTime;
-  source: 'google' | 'microsoft' | 'unified';
+  source: 'google' | 'microsoft' | 'unified' | 'invite';
   original_ids?: Record<string, string>;
+  attendees?: Attendee[];
+}
+
+export interface Account {
+  key: string;
+  provider: string;
+  email: string;
+  linked: boolean;
 }

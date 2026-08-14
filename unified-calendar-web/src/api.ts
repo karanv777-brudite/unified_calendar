@@ -18,6 +18,13 @@ export const fetchAccounts = async () => {
   return response.data;
 };
 
+export const disconnectAccount = async (accountKey: string, userId: string = 'test_user') => {
+  const response = await api.delete(`/auth/accounts/${accountKey}`, {
+    params: { user_id: userId }
+  });
+  return response.data;
+};
+
 // --- NEW CRUD OPERATIONS ---
 
 export const createEvent = async (event: Partial<UnifiedEvent>, targetAccount: string[] = ['all']): Promise<UnifiedEvent> => {
