@@ -1,9 +1,3 @@
 .env
 
-test.py
-
-test_db.py
-
-test2.py
-
-.gitignore
+test/
